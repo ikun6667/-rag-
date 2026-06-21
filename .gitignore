@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment Variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+log/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# ChromaDB Data
+data/chromadb/
+
+# Test Results
+*.json
+!requirements.txt
+tool_evaluation_results.json
+e2e_tool_evaluation_results.json
+rag_evaluation_results.json
+
+# Temporary Files
+tempfile_*.py
+*.tmp
+.cache/
+
+# HuggingFace Cache
+.huggingface/
+
+# Redis Dump
+dump.rdb
+
+# Coverage
+htmlcov/
+.coverage
+
+# Pytest
+.pytest_cache/
