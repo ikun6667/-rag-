@@ -7,6 +7,7 @@ from app.mcp.tools import amap_tools
 from app.models.model_router import ModelTier
 from app.rag.retriever import hybrid_retriever
 from app.rag.reranker import reranker
+from app.utils.token_manager import token_manager
 from typing import Dict, Any, List
 from app.utils.prompt_templates import ATTRACTION_PROMPT
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -106,8 +107,8 @@ class AttractionAgent(BaseAgent):
             for a in attractions[:5]
         ]) if attractions else "暂无搜索结果"
         
-        # 创建 Prompt
-        prompt = self._create_prompt(
+        # 创建 Prompt (使用 token 管理)
+        prompt = token_manager.optimize_prompt(
             ATTRACTION_PROMPT,
             query=query,
             location=location,

@@ -7,6 +7,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from app.models.llm_client import llm_client
 from app.cache.redis_cache import cache_manager
+from pydantic import ValidationError
+import asyncio
 import logging
 import json
 
@@ -16,12 +18,13 @@ logger = logging.getLogger(__name__)
 class BaseAgent(ABC):
     """Agent 抽象基类"""
     
-    def __init__(self, name: str, cache_enabled: bool = True, tools: List = None):
+    def __init__(self, name: str, cache_enabled: bool = True, tools: List = None, model_tier=None):
         self.name = name
         self.llm = llm_client
         self.cache_enabled = cache_enabled
         self.cache_prefix = f"agent:{name}"
         self.tools = tools or []
+        self.model_tier = model_tier  # 模型层级，用于模型路由
         
         # 如果提供了工具，创建带工具绑定的LLM
         if self.tools:
@@ -136,34 +139,57 @@ class BaseAgent(ABC):
         logger.warning(f"Reached max iterations ({max_iterations})")
         return current_messages[-1].content if current_messages else ""
     
-    async def _execute_tool(self, tool_name: str, tool_args: dict) -> str:
+    async def _execute_tool(self, tool_name: str, tool_args: dict, max_retries: int = 2) -> str:
         """
-        执行单个工具
+        执行单个工具，带 Pydantic 强校验 + 失败重试
         
         Args:
             tool_name: 工具名称
             tool_args: 工具参数
+            max_retries: 校验/执行失败时的最大重试次数，默认 2 次
         
         Returns:
             工具执行结果的字符串表示
         """
-        try:
-            # 查找匹配的工具
-            for tool in self.tools:
-                if tool.name == tool_name:
-                    # 优先使用异步协程（async @tool 的真实函数在 coroutine 里）
-                    if hasattr(tool, 'coroutine') and tool.coroutine is not None:
-                        result = await tool.coroutine(**tool_args)
-                    elif hasattr(tool, 'func') and tool.func is not None:
-                        result = tool.func(**tool_args)
-                    else:
-                        result = await tool(**tool_args)
-                    return result
-            
+        # 查找匹配的工具
+        target_tool = None
+        for tool in self.tools:
+            if tool.name == tool_name:
+                target_tool = tool
+                break
+        
+        if not target_tool:
             return json.dumps({"error": f"Tool '{tool_name}' not found"}, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Tool execution error: {e}")
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        
+        last_error = None
+        for attempt in range(1, max_retries + 2):  # 1次正常 + max_retries次重试
+            try:
+                # 用 tool 自带的 args_schema 校验参数
+                if hasattr(target_tool, 'args_schema') and target_tool.args_schema is not None:
+                    validated = target_tool.args_schema(**tool_args)
+                    tool_args = validated.model_dump()
+                
+                # 执行工具
+                if hasattr(target_tool, 'coroutine') and target_tool.coroutine is not None:
+                    result = await target_tool.coroutine(**tool_args)
+                elif hasattr(target_tool, 'func') and target_tool.func is not None:
+                    result = target_tool.func(**tool_args)
+                else:
+                    result = await target_tool(**tool_args)
+                
+                logger.info(f"Tool [{tool_name}] executed successfully")
+                return result
+                
+            except (ValidationError, Exception) as e:
+                last_error = str(e)
+                logger.warning(f"Tool [{tool_name}] failed (attempt {attempt}): {e}")
+                if attempt <= max_retries:
+                    await asyncio.sleep(0.5 * attempt)
+                    continue
+        
+        # 所有重试耗尽
+        logger.error(f"Tool [{tool_name}] failed after {max_retries + 1} attempts: {last_error}")
+        return json.dumps({"error": f"工具执行失败（已重试{max_retries}次）: {last_error}"}, ensure_ascii=False)
     
     def __repr__(self):
         return f"{self.__class__.__name__}(name={self.name})"

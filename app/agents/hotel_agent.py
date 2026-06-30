@@ -90,7 +90,7 @@ class HotelAgent(BaseAgent):
                     if start_idx >= 0 and end_idx > start_idx:
                         json_str = result[start_idx:end_idx]
                         return json.loads(json_str)
-            except:
+            except (json.JSONDecodeError, ValueError, IndexError):
                 pass
             
             # 如果解析失败，回退到直接调用

@@ -44,11 +44,7 @@ redis_client = redis.Redis(
 )
 
 
-# ChromaDB 客户端
-# 禁用遥测以避免兼容性警告
-import os
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-
+# ChromaDB 客户端（遥测已在文件顶部禁用）
 chroma_client = chromadb.PersistentClient(path=settings.CHROMA_PERSIST_DIR)
 
 

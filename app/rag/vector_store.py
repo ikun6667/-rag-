@@ -28,7 +28,7 @@ class VectorStore:
         try:
             self.collection = chroma_client.get_collection(name=collection_name)
             logger.info(f"Loaded existing collection: {collection_name}")
-        except:
+        except Exception:
             self.collection = chroma_client.create_collection(
                 name=collection_name,
                 metadata={"hnsw:space": "cosine"}
@@ -102,7 +102,7 @@ class VectorStore:
         try:
             chroma_client.delete_collection(name=self.collection_name)
             logger.info(f"Deleted collection: {self.collection_name}")
-        except:
+        except Exception:
             logger.warning(f"Collection {self.collection_name} does not exist")
         
         # 重新创建空集合
