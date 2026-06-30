@@ -2,7 +2,6 @@
 混合检索系统 - BM25 + BGE-M3 + RRF 融合
 """
 from rank_bm25 import BM25Okapi
-from sentence_transformers import SentenceTransformer
 from app.rag.vector_store import vector_store
 from app.core.config import settings
 from typing import List, Dict, Any
@@ -19,7 +18,8 @@ class HybridRetriever:
     def __init__(self):
         self.bm25 = None
         self.corpus = []
-        self.embedding_model = SentenceTransformer(settings.EMBEDDING_MODEL)
+        # 复用 vector_store 的 embedding 模型，避免重复加载
+        self.embedding_model = vector_store.embedding_model
         self.documents_map = {}
     
     def build_index(self, documents: List[str]):

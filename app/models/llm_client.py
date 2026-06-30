@@ -5,6 +5,8 @@ from langchain_openai import ChatOpenAI
 from app.core.config import settings
 from app.models.model_router import model_router, ModelTier, ModelConfig
 from app.models.circuit_breaker import circuit_breakers, retry_with_fallback, LLMCallFailedError
+from app.utils.token_manager import token_manager
+
 from typing import Optional, Dict, Any, Callable
 import logging
 
@@ -73,15 +75,37 @@ class LLMClient:
         tier = model_router.route_by_task(task_type)
         return self._get_or_create_model(tier)
     
-    def generate(self, prompt: str, task_type: Optional[str] = None, **kwargs) -> str:
+    def generate(self, prompt: str, task_type: Optional[str] = None, 
+                check_token_limit: bool = True, **kwargs) -> str:
         """
         生成文本
         
         Args:
             prompt: 提示词
             task_type: 任务类型，用于自动选择模型
+            check_token_limit: 是否检查 token 限制
         """
         try:
+            # Token 检查和截断
+            if check_token_limit:
+                # 获取当前模型的 max_tokens 配置
+                if task_type:
+                    tier = model_router.route_by_task(task_type)
+                else:
+                    tier = ModelTier.STANDARD
+                
+                config = model_router.get_model_config(tier)
+                max_tokens = config.max_tokens
+                
+                # 检查并优化 prompt
+                token_manager.check_and_warn(prompt, threshold=max_tokens * 0.8)
+                
+                # 如果超过阈值,自动截断
+                estimated_tokens = token_manager.estimate_tokens(prompt)
+                if estimated_tokens > max_tokens * 0.9:
+                    logger.warning(f"Prompt approaching limit ({estimated_tokens}/{max_tokens}), truncating...")
+                    prompt = token_manager.truncate_text(prompt, int(max_tokens * 0.85))
+            
             # 根据任务类型选择模型
             if task_type:
                 model = self.get_model_by_task(task_type)
@@ -95,7 +119,8 @@ class LLMClient:
             raise
     
     async def generate_async(self, prompt: str, task_type: Optional[str] = None, 
-                            use_circuit_breaker: bool = True, **kwargs) -> str:
+                            use_circuit_breaker: bool = True,
+                            check_token_limit: bool = True, **kwargs) -> str:
         """
         异步生成文本(带熔断器和重试降级)
         
@@ -103,7 +128,28 @@ class LLMClient:
             prompt: 提示词
             task_type: 任务类型，用于自动选择模型
             use_circuit_breaker: 是否使用熔断器保护
+            check_token_limit: 是否检查 token 限制
         """
+        # Token 检查和截断
+        if check_token_limit:
+            # 获取当前模型的 max_tokens 配置
+            if task_type:
+                tier = model_router.route_by_task(task_type)
+            else:
+                tier = ModelTier.STANDARD
+            
+            config = model_router.get_model_config(tier)
+            max_tokens = config.max_tokens
+            
+            # 检查并优化 prompt
+            token_manager.check_and_warn(prompt, threshold=max_tokens * 0.8)
+            
+            # 如果超过阈值,自动截断
+            estimated_tokens = token_manager.estimate_tokens(prompt)
+            if estimated_tokens > max_tokens * 0.9:
+                logger.warning(f"Prompt approaching limit ({estimated_tokens}/{max_tokens}), truncating...")
+                prompt = token_manager.truncate_text(prompt, int(max_tokens * 0.85))
+        
         # 选择模型
         if task_type:
             tier = model_router.route_by_task(task_type)

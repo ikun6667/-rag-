@@ -6,6 +6,7 @@ from app.agents.attraction_agent import attraction_agent
 from app.agents.weather_agent import weather_agent
 from app.agents.hotel_agent import hotel_agent
 from app.models.model_router import ModelTier
+from app.utils.token_manager import token_manager
 from typing import Dict, Any, List
 from app.utils.prompt_templates import PLANNER_PROMPT
 import logging
@@ -116,7 +117,7 @@ class PlannerAgent(BaseAgent):
         weather_info = sub_results.get('weather', {}).get('suggestion', '')
         hotel_info = sub_results.get('hotel', {}).get('recommendation', '')
         
-        prompt = self._create_prompt(
+        prompt = token_manager.optimize_prompt(
             PLANNER_PROMPT,
             query=query,
             location=location,

@@ -15,6 +15,26 @@ class AMapService:
     def __init__(self):
         self.api_key = settings.AMAP_API_KEY
         self.base_url = "https://restapi.amap.com/v3"
+        # 共享 HTTP 客户端（连接池复用）
+        self._client: Optional[httpx.AsyncClient] = None
+    
+    def _get_client(self) -> httpx.AsyncClient:
+        """获取或创建共享的 HTTP 客户端"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0),
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=10,
+                    keepalive_expiry=30
+                )
+            )
+        return self._client
+    
+    async def close(self):
+        """关闭 HTTP 客户端"""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
     
     async def search_poi(self, keywords: str, city: str = "全国", 
                         types: str = "旅游景点") -> List[Dict]:
@@ -31,15 +51,15 @@ class AMapService:
         }
         
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params, timeout=10.0)
-                data = response.json()
-                
-                if data['status'] == '1' and 'pois' in data:
-                    return self._format_poi_results(data['pois'])
-                else:
-                    logger.warning(f"AMap API error: {data.get('info', 'Unknown')}")
-                    return []
+            client = self._get_client()
+            response = await client.get(url, params=params)
+            data = response.json()
+            
+            if data['status'] == '1' and 'pois' in data:
+                return self._format_poi_results(data['pois'])
+            else:
+                logger.warning(f"AMap API error: {data.get('info', 'Unknown')}")
+                return []
         except Exception as e:
             logger.error(f"POI search error: {e}")
             return []
@@ -68,14 +88,14 @@ class AMapService:
         }
         
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params, timeout=10.0)
-                data = response.json()
-                
-                if data['status'] == '1' and 'forecasts' in data:
-                    return data['forecasts'][0]
-                else:
-                    return {}
+            client = self._get_client()
+            response = await client.get(url, params=params)
+            data = response.json()
+            
+            if data['status'] == '1' and 'forecasts' in data:
+                return data['forecasts'][0]
+            else:
+                return {}
         except Exception as e:
             logger.error(f"Weather query error: {e}")
             return {}
@@ -92,14 +112,14 @@ class AMapService:
         }
         
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params, timeout=10.0)
-                data = response.json()
-                
-                if data['status'] == '1' and 'route' in data:
-                    return data['route']
-                else:
-                    return {}
+            client = self._get_client()
+            response = await client.get(url, params=params)
+            data = response.json()
+            
+            if data['status'] == '1' and 'route' in data:
+                return data['route']
+            else:
+                return {}
         except Exception as e:
             logger.error(f"Route calculation error: {e}")
             return {}
@@ -114,14 +134,14 @@ class AMapService:
         }
         
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, params=params, timeout=10.0)
-                data = response.json()
-                
-                if data['status'] == '1' and 'pois' in data:
-                    return data['pois'][0] if data['pois'] else {}
-                else:
-                    return {}
+            client = self._get_client()
+            response = await client.get(url, params=params)
+            data = response.json()
+            
+            if data['status'] == '1' and 'pois' in data:
+                return data['pois'][0] if data['pois'] else {}
+            else:
+                return {}
         except Exception as e:
             logger.error(f"Place details error: {e}")
             return {}

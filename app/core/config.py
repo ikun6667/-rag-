@@ -4,6 +4,48 @@
 from pydantic_settings import BaseSettings
 from typing import Optional
 import os
+import glob
+
+
+def _resolve_hf_model_path(model_name: str) -> str:
+    """
+    解析 HuggingFace 模型路径。
+    
+    如果是本地路径（存在）直接返回；
+    如果是 HF 模型名（如 BAAI/bge-m3），检查本地缓存是否已下载，
+    有则使用缓存路径（避免重复下载），否则返回原名（触发自动下载）。
+    """
+    # 如果是本地路径且存在，直接返回
+    if os.path.isdir(model_name):
+        return model_name
+    
+    # 检查 HuggingFace 本地缓存
+    hf_cache = os.path.expanduser("~/.cache/huggingface/hub")
+    # 模型名格式: "org/model-name" -> 缓存目录: "models--org--model-name"
+    safe_name = "models--" + model_name.replace("/", "--")
+    model_cache_dir = os.path.join(hf_cache, safe_name)
+    
+    if os.path.isdir(model_cache_dir):
+        # 查找最新的完整 snapshot（跳过不完整的下载）
+        snapshots_dir = os.path.join(model_cache_dir, "snapshots")
+        if os.path.isdir(snapshots_dir):
+            snapshot_dirs = sorted(glob.glob(os.path.join(snapshots_dir, "*")), reverse=True)
+            for snap_dir in snapshot_dirs:
+                # 检查 snapshot 是否完整（至少包含 config.json、模型文件和 sentence-transformers 兼容配置）
+                has_config = os.path.isfile(os.path.join(snap_dir, "config.json"))
+                # 检查是否有模型权重文件（.bin 或 .safetensors）
+                has_model = (
+                    glob.glob(os.path.join(snap_dir, "*.bin")) or
+                    glob.glob(os.path.join(snap_dir, "*.safetensors")) or
+                    glob.glob(os.path.join(snap_dir, "model*"))
+                )
+                # 检查 sentence-transformers 兼容性（1_Pooling 目录）
+                has_pooling = os.path.isdir(os.path.join(snap_dir, "1_Pooling"))
+                if has_config and has_model and has_pooling:
+                    return snap_dir
+    
+    # 未找到本地缓存，返回原名（将触发联网下载）
+    return model_name
 
 
 class Settings(BaseSettings):
@@ -12,7 +54,13 @@ class Settings(BaseSettings):
     # API 配置
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
-    DEBUG: bool = True
+    DEBUG: bool = False
+    
+    # CORS 配置（生产环境请限制为具体域名）
+    CORS_ORIGINS: str = "*"  # 多个域名用逗号分隔，如 "https://example.com,https://app.example.com"
+    
+    # API 鉴权（设置后客户端需在 Header 中携带 X-API-Key）
+    API_KEY: str = ""  # 为空则不启用鉴权（开发环境），生产环境务必设置
     
     # 数据库配置
     MYSQL_HOST: str = "localhost"
@@ -57,7 +105,7 @@ class Settings(BaseSettings):
     ADVANCED_MODEL_MAX_TOKENS: int = 4096
     
     # Embedding 配置
-    EMBEDDING_MODEL: str = os.path.expanduser("~/.cache/huggingface/hub/models--BAAI--bge-m3/snapshots/5617a9f61b028005a4858fdac845db406aefb181")  # 使用本地模型路径
+    EMBEDDING_MODEL: str = "BAAI/bge-m3"  # HuggingFace 模型名称，支持本地路径或远程模型
     EMBEDDING_DIMENSION: int = 1024
     
     # HuggingFace 配置
@@ -84,3 +132,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# 解析 Embedding 模型路径（自动检测本地缓存）
+settings.EMBEDDING_MODEL = _resolve_hf_model_path(settings.EMBEDDING_MODEL)

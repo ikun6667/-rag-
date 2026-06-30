@@ -1,7 +1,8 @@
 """
-LangGraph 多 Agent 工作流 - 支持动态路由
+LangGraph 多 Agent 工作流 - 支持动态路由 + 并行执行
 """
 from typing import TypedDict, Annotated, Literal, List, Optional
+from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from app.agents.planner_agent import planner_agent
 from app.agents.attraction_agent import attraction_agent
@@ -10,10 +11,22 @@ from app.agents.hotel_agent import hotel_agent
 from app.models.llm_client import llm_client
 from app.utils.prompt_templates import PLANNER_PROMPT
 from langchain_core.messages import SystemMessage, HumanMessage
+import asyncio
 import json
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# 路由决策的结构化输出 Schema（Pydantic 自动生成 JSON Schema）
+class RoutingDecision(BaseModel):
+    """LLM 路由决策的结构化输出模型，通过 function calling 强制校验"""
+    agents: List[Literal["attraction", "weather", "hotel"]] = Field(
+        description="需要运行的 Agent 列表，仅从 attraction/weather/hotel 中选取"
+    )
+    reason: str = Field(
+        description="路由决策的简要原因"
+    )
 
 
 # 定义状态
@@ -83,31 +96,22 @@ async def router_node(state: AgentState) -> AgentState:
 请决定需要运行哪些 Agent？
 """
     
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=human_message)
+    ]
+    
     try:
-        # 调用 LLM 进行路由决策
-        messages = [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_message)
-        ]
+        # 通过 with_structured_output 绑定 Schema，LLM 输出会被强制校验为 RoutingDecision
+        structured_llm = llm_client.chat_model.with_structured_output(RoutingDecision)
         
-        response = await llm_client.chat_model.ainvoke(messages)
-        result_text = response.content
+        routing_decision: RoutingDecision = await structured_llm.ainvoke(messages)
         
-        # 解析 JSON 结果
-        if '{' in result_text and '}' in result_text:
-            start_idx = result_text.find('{')
-            end_idx = result_text.rfind('}') + 1
-            json_str = result_text[start_idx:end_idx]
-            routing_decision = json.loads(json_str)
-            
-            agents_to_run = routing_decision.get('agents', ['attraction', 'weather', 'hotel'])
-            reason = routing_decision.get('reason', '')
-            
-            logger.info(f"Routing decision: {agents_to_run}, Reason: {reason}")
-        else:
-            # 解析失败，使用默认策略
-            logger.warning("Failed to parse routing decision, using default")
-            agents_to_run = ['attraction', 'weather', 'hotel']
+        # Pydantic 已自动校验类型和枚举值，直接取值
+        agents_to_run = routing_decision.agents
+        reason = routing_decision.reason
+        
+        logger.info(f"Routing decision: {agents_to_run}, Reason: {reason}")
         
     except Exception as e:
         logger.error(f"Router node error: {e}, using default agents")
@@ -125,16 +129,11 @@ async def router_node(state: AgentState) -> AgentState:
     return state
 
 
-async def dynamic_agent_node(state: AgentState, agent_name: str) -> AgentState:
+async def _run_single_agent(agent_name: str, state: AgentState) -> tuple:
     """
-    动态 Agent 执行节点
-    
-    Args:
-        state: 当前状态
-        agent_name: 要执行的 Agent 名称
+    执行单个 Agent，返回 (agent_name, result)
+    用于并行调度，各 Agent 之间无数据依赖
     """
-    logger.info(f"Executing dynamic agent node: {agent_name}")
-    
     try:
         if agent_name == 'attraction':
             result = await attraction_agent.execute({
@@ -143,62 +142,51 @@ async def dynamic_agent_node(state: AgentState, agent_name: str) -> AgentState:
                 'preferences': state['preferences'],
                 'budget': state['budget']
             })
-            state['attraction_result'] = result
-            
         elif agent_name == 'weather':
             result = await weather_agent.execute({
                 'location': state['location']
             })
-            state['weather_result'] = result
-            
         elif agent_name == 'hotel':
             result = await hotel_agent.execute({
                 'location': state['location'],
                 'budget': state['budget'],
                 'preferences': state['preferences']
             })
-            state['hotel_result'] = result
-        
-        # 标记该 Agent 已完成
-        if agent_name not in state['completed_agents']:
-            state['completed_agents'].append(agent_name)
-        
-        # 确定下一个要执行的 Agent
-        remaining_agents = [a for a in state['agents_to_run'] if a not in state['completed_agents']]
-        if remaining_agents:
-            state['next_step'] = remaining_agents[0]
         else:
-            state['next_step'] = 'planner'
+            result = {'error': f'Unknown agent: {agent_name}'}
         
-        logger.info(f"Completed {agent_name}, next: {state['next_step']}")
-        
+        logger.info(f"Agent [{agent_name}] completed successfully")
+        return (agent_name, result)
     except Exception as e:
-        logger.error(f"Error executing {agent_name}: {e}")
-        # 即使出错也标记为完成，继续执行其他 Agent
-        if agent_name not in state['completed_agents']:
-            state['completed_agents'].append(agent_name)
-        
-        remaining_agents = [a for a in state['agents_to_run'] if a not in state['completed_agents']]
-        state['next_step'] = remaining_agents[0] if remaining_agents else 'planner'
+        logger.error(f"Agent [{agent_name}] failed: {e}")
+        return (agent_name, {'error': str(e), 'status': 'failed'})
+
+
+async def parallel_agents_node(state: AgentState) -> AgentState:
+    """
+    并行执行节点：同时运行所有路由选中的 Agent
+    各 Agent 通过统一输入（城市、预算）独立工作，无跨 Agent 数据依赖
+    """
+    agents_to_run = state['agents_to_run']
+    logger.info(f"Parallel executing agents: {agents_to_run}")
     
+    # 并行调度所有 Agent
+    tasks = [_run_single_agent(name, state) for name in agents_to_run]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # 收集结果到 state
+    for item in results:
+        if isinstance(item, Exception):
+            logger.error(f"Unexpected gather error: {item}")
+            continue
+        agent_name, result = item
+        state[f'{agent_name}_result'] = result
+    
+    state['completed_agents'] = list(agents_to_run)
+    state['next_step'] = 'planner'
+    
+    logger.info(f"All agents completed, proceeding to planner")
     return state
-
-
-# 包装函数，用于 LangGraph
-def create_attraction_node():
-    async def node(state: AgentState) -> AgentState:
-        return await dynamic_agent_node(state, 'attraction')
-    return node
-
-def create_weather_node():
-    async def node(state: AgentState) -> AgentState:
-        return await dynamic_agent_node(state, 'weather')
-    return node
-
-def create_hotel_node():
-    async def node(state: AgentState) -> AgentState:
-        return await dynamic_agent_node(state, 'hotel')
-    return node
 
 
 async def planner_node(state: AgentState) -> AgentState:
@@ -247,73 +235,24 @@ async def planner_node(state: AgentState) -> AgentState:
     return state
 
 
-# 路由函数
-def route_after_router(state: AgentState) -> str:
-    """路由决策后的下一步"""
-    return state['next_step']
-
-def route_after_agent(state: AgentState) -> str:
-    """Agent 执行后的路由"""
-    return state['next_step']
-
-
 # 构建工作流
 def create_workflow():
-    """创建 LangGraph 工作流 - 支持动态路由"""
+    """创建 LangGraph 工作流 - 动态路由 + 并行执行"""
     workflow = StateGraph(AgentState)
     
-    # 添加节点
+    # 添加节点：router → parallel_agents → planner
     workflow.add_node("router", router_node)
-    workflow.add_node("attraction", create_attraction_node())
-    workflow.add_node("weather", create_weather_node())
-    workflow.add_node("hotel", create_hotel_node())
+    workflow.add_node("parallel_agents", parallel_agents_node)
     workflow.add_node("planner", planner_node)
     
-    # 设置入口点：先进行路由决策
+    # 设置入口点
     workflow.set_entry_point("router")
     
-    # 从 router 到第一个 Agent
-    workflow.add_conditional_edges(
-        "router",
-        route_after_router,
-        {
-            "attraction": "attraction",
-            "weather": "weather",
-            "hotel": "hotel",
-            "planner": "planner"  # 如果不需要任何 Agent，直接规划
-        }
-    )
+    # router 决策完毕后，统一进入并行执行节点
+    workflow.add_edge("router", "parallel_agents")
     
-    # Agent 之间的动态路由
-    workflow.add_conditional_edges(
-        "attraction",
-        route_after_agent,
-        {
-            "weather": "weather",
-            "hotel": "hotel",
-            "planner": "planner"
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "weather",
-        route_after_agent,
-        {
-            "attraction": "attraction",
-            "hotel": "hotel",
-            "planner": "planner"
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "hotel",
-        route_after_agent,
-        {
-            "attraction": "attraction",
-            "weather": "weather",
-            "planner": "planner"
-        }
-    )
+    # 并行执行完毕后，进入规划节点
+    workflow.add_edge("parallel_agents", "planner")
     
     # Planner 结束后结束工作流
     workflow.add_edge("planner", END)
@@ -321,7 +260,7 @@ def create_workflow():
     # 编译
     app = workflow.compile()
     
-    logger.info("Dynamic LangGraph workflow created successfully")
+    logger.info("Parallel LangGraph workflow created successfully")
     
     return app
 

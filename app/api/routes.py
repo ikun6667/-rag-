@@ -95,7 +95,7 @@ async def plan_travel(request: TravelQueryRequest):
     
     except Exception as e:
         logger.error(f"Travel planning error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="服务内部错误，请稍后重试")
 
 
 @router.post("/api/data/process")
@@ -124,7 +124,7 @@ async def process_data(request: DataProcessRequest):
     
     except Exception as e:
         logger.error(f"Data processing error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="数据处理失败，请检查输入参数")
 
 
 @router.get("/api/rag/search")
@@ -157,7 +157,7 @@ async def search_knowledge(query: str, top_k: int = 5):
     
     except Exception as e:
         logger.error(f"Search error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="搜索服务暂时不可用")
 
 
 @router.post("/api/cache/clear")
@@ -194,7 +194,7 @@ async def clear_cache(prefix: Optional[str] = None):
     
     except Exception as e:
         logger.error(f"Cache clear error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="缓存清除失败")
 
 
 @router.get("/api/stats")
@@ -230,4 +230,4 @@ async def get_stats():
     
     except Exception as e:
         logger.error(f"Stats error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="获取统计信息失败")
