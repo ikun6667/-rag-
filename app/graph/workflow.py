@@ -1,5 +1,5 @@
 """
-LangGraph 多 Agent 工作流 - 支持动态路由 + 并行执行
+“LangGraph 多 Agent 工作流 - 支持动态路由 + 并行执行”
 """
 from typing import TypedDict, Annotated, Literal, List, Optional
 from pydantic import BaseModel, Field
