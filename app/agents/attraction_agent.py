@@ -1,5 +1,5 @@
 """
-景点推荐 Agent1
+景点推荐 Agent
 """
 from app.agents.base_agent import BaseAgent
 from app.mcp.amap_service import amap_service
